@@ -6,9 +6,8 @@ import io
 
 import numpy as np
 import matplotlib.pyplot as plt
-
-import pyaudio
-
+import sounddevice as sd
+sd.default.samplerate = 44100
 
 class FloatLoop:
     SIZE = 44100
@@ -29,7 +28,7 @@ class FloatLoop:
             chunk = self.buffer[
                     self.roffset: min(self.SIZE, self.roffset + toread)]
             self.roffset += toread
-            if self.roffset >= self.available:
+            if self.roffset >= self.SIZE:
                 self.roffset -= self.SIZE
                 chunk = np.append(chunk, self.buffer[0:self.roffset])
             self.available -= toread
@@ -40,7 +39,7 @@ class FloatLoop:
 
     def write(self, s):
         while self.SIZE == self.available:
-            print("Waiting ", len(s), self.available)
+            # print("Waiting ", len(s), self.available)
             with self.notify:
                 self.notify.wait()
         with self.lock:
@@ -55,31 +54,31 @@ class FloatLoop:
 
 
 class Audio:
-    p = pyaudio.PyAudio()
     _buffer = FloatLoop()
 
     CHANNELS = 1
     RATE = 44100
 
     def __init__(self):
-        def callback(in_data, frame_count, time_info, flag):
+        def callback(in_data, out_data, frame_count, time_info, flag):
             # using Numpy to convert to array for processing
             # audio_data = np.fromstring(in_data, dtype=np.float32)
-            out_data = self._buffer.read(frame_count * self.RATE)
-            if len(out_data) != 0:
-                print("PLAYING", out_data)
-            out_data = np.append(out_data, np.zeros(frame_count * self.RATE - len(out_data),
-                                                    dtype=np.float32))
-            return out_data, pyaudio.paContinue
+            out_data.fill(0)
+            channel = self._buffer.read(frame_count)
+            # print(channel.shape, frame_count)
+            channel = np.append(channel, np.zeros(frame_count - len(channel), dtype=np.float32))
+            out_data[:,0] = channel
 
-        self.stream = self.p.open(format=pyaudio.paFloat32,
-                                  channels=self.CHANNELS,
-                                  rate=self.RATE,
-                                  output=True,
-                                  input=True,
-                                  stream_callback=callback)
+        self.stream = sd.Stream(channels=1, callback=callback, samplerate=self.RATE, dtype=np.float32)
+        self.stream.start()
+        # self.stream = self.p.open(format=pyaudio.paFloat32,
+        #                           channels=self.CHANNELS,
+        #                           rate=self.RATE,
+        #                           output=True,
+        #                           input=True,
+        #                           stream_callback=callback)
 
-        self.stream.start_stream()
+        # self.stream.start_stream()
 
     def close(self):
         # stop stream (6)
