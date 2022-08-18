@@ -2,31 +2,26 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-import pyaudio
+import sounddevice as sd
 import time
 
 CHUNK = 1024
-FORMAT = pyaudio.paFloat32
 CHANNELS = 1
 RATE = 44100
+
+sd.default.samplerate = RATE
+sd.default.device = 'USB Audio Device'
 
 frames = []
 
 
 def callback(in_data, frame_count, time_info, status):
-    frames.append(np.fromstring(in_data, dtype=np.float32))
-    return (None, pyaudio.paContinue)
+    frames.append(in_data)
 
 
 def record():
-    p = pyaudio.PyAudio()
-
-    stream = p.open(format=FORMAT,
-                    channels=CHANNELS,
-                    rate=RATE,
-                    input=True,
-                    stream_callback=callback,
-                    frames_per_buffer=CHUNK)
+    stream = sd.InputStream(channels=CHANNELS, callback=callback,
+                            samplerate=RATE, blocksize=CHUNK, dtype=np.float32)
 
     print("Start recording")
 
@@ -47,8 +42,8 @@ def record():
 
     stream.start_stream()
 
-    myAnimation = animation.FuncAnimation(fig, draw_callback, frames=range(100), \
-                                          interval=10, blit=True, )
+    animation.FuncAnimation(fig, draw_callback, frames=range(100), \
+                            interval=10, blit=True, )
 
     plt.show()
 
@@ -56,10 +51,6 @@ def record():
 
     stream.stop_stream()
     stream.close()
-    p.terminate()
-
-    sample_width = p.get_sample_size(FORMAT)
-    return sample_width
 
 
 if __name__ == '__main__':

@@ -7,7 +7,6 @@ import numpy as np
 import sounddevice as sd
 
 sd.default.samplerate = 44100
-sd.default.device = 'USB Audio Device'
 
 
 class FloatLoop:
@@ -61,29 +60,35 @@ class Audio:
     CHANNELS = 1
     RATE = 44100
 
-    def __init__(self):
-        def callback(in_data: np.ndarray, out_data: np.ndarray, frame_count: int, time_info, flag):
+    def __init__(self, chunk_size):
+        self.handlers = []
+        self.buffer = np.array([], dtype=np.float32)
+        self.prev_chunk = None
+
+        def callback(in_data: np.ndarray, out_data: np.ndarray, frames: int, time, status):
             # using Numpy to convert to array for processing
             # audio_data = np.fromstring(in_data, dtype=np.float32)
             out_data.fill(0)
-            channel = self._buffer.read(frame_count)
-            # print(channel.shape, frame_count)
-            channel = np.append(channel, np.zeros(frame_count - len(channel),
+            channel = self._buffer.read(frames)
+            channel = np.append(channel, np.zeros(frames - len(channel),
                                                   dtype=np.float32))
             out_data[:, 0] = channel
-            in_data[:, 0]
+            self.buffer = np.append(self.buffer, in_data[:,0])
+            while len(self.buffer) > chunk_size:
+                chunk = self.buffer[:chunk_size]
+                self.buffer = self.buffer[chunk_size:]
+                for handler in self.handlers:
+                    handler(chunk, self.prev_chunk)
+                self.prev_chunk = chunk
 
         self.stream = sd.Stream(channels=1, callback=callback,
-                                samplerate=self.RATE, dtype=np.float32)
+                                samplerate=self.RATE, dtype='float32')
         self.stream.start()
 
     def close(self):
         # stop stream (6)
-        self.stream.stop_stream()
+        self.stream.stop()
         self.stream.close()
-
-        # close PyAudio (7)
-        self.p.terminate()
 
     def play(self, signal: np.ndarray):
         """
@@ -91,22 +96,26 @@ class Audio:
         """
         self._buffer.write(signal)
 
+    def register_handler(self, handler):
+        self.handlers.append(handler)
+
 
 class AbstractModemSender(abc.ABC):
-    """Implements convertion from data to signal"""
+    """Implements conversion from data to signal"""
 
     @abc.abstractmethod
     def bytes_to_signal(self, data: bytes) -> np.ndarray:
         """Converts an array of bytes into the sound wave"""
 
-    def __init__(self, buf_size=1024):
+    def __init__(self, buf_size=1024, chunk_size=4410):
         self._buf_size = buf_size
+        self.chunk_size = chunk_size
         self._buffer = Queue(buf_size)
-        self._player = Audio()
+        self._player = Audio(chunk_size)
 
     def write_bytes(self, data: bytes):
         """
-        Writes data to be send. If buffer is full will block until
+        Writes data to send. If buffer is full will block until
         all data is in buffer.
         """
         for b in data:
@@ -131,9 +140,8 @@ class AbstractModemSender(abc.ABC):
         Empties the buffer. Should not be used from two threads at once!
         """
         data = self._consume_buffer(wait_nonempty=wait_nonempty)
-        print(data)
+        print("SENDING", data.hex())
         signal = self.bytes_to_signal(data)
-        print(signal)
         self._player.play(signal)
 
     def start(self):
@@ -147,53 +155,3 @@ class TrivialModemSender(AbstractModemSender):
     def bytes_to_signal(self, data: bytes) -> np.ndarray:
         return np.array(data)
 
-
-class NaiveModemSender(AbstractModemSender):
-    CHUNK_SIZE = 4410
-    MIN = 30.0
-    SIN_RANGE = np.linspace(0, 2 * np.pi, CHUNK_SIZE)
-    MUL = (2.0 ** (1 / 6))
-
-    def wave_by_hz(self, hz: int):
-        return np.sin(self.SIN_RANGE * hz)
-
-    def wave_by_id(self, id: int):
-        base_hz = int(self.MIN * (self.MUL ** id))
-        tau = 0.7
-        num = 1
-        return np.sum([self.wave_by_hz(base_hz * i) * (tau ** i) for i in
-                       range(1, num + 1, 1)], axis=0)
-
-    def bytes_to_signal(self, data: bytes) -> np.ndarray:
-        # Use float32 because default is float64 and you will get garbage :P
-        result = np.zeros(self.CHUNK_SIZE * len(data), dtype=np.float32)
-        for i, el in enumerate(data):
-            enc = int(hamming_codec.encode(el, 8), 2)
-            wave = np.sum([self.wave_by_id(b + 2) for b in range(12) if
-                           (enc & (1 << b)) != 0] + [self.wave_by_id(i % 2)],
-                          axis=0)
-            result[
-            i * self.CHUNK_SIZE: (i + 1) * self.CHUNK_SIZE] = wave / np.max(
-                np.abs(wave))
-        return result
-
-
-if __name__ == '__main__':
-    modem = NaiveModemSender(10)
-
-
-    def _writer():
-        for i in range(256):
-            modem.write_bytes(bytes([i for _ in range(1)]))
-
-
-    t1 = threading.Thread(target=_writer)
-
-    t1.start()
-
-    t2 = threading.Thread(target=modem.start)
-
-    t2.start()
-
-    t1.join()
-    t2.join()
